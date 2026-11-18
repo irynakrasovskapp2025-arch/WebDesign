@@ -8,17 +8,71 @@ if (!feedbackForm) {
   const phone = feedbackForm.querySelector("#phone");
   const message = feedbackForm.querySelector("#message");
   const agreement = feedbackForm.querySelector("#agreement");
+  const successDialog = document.getElementById("feedback-success-dialog");
+  const closeSuccessDialogButton = successDialog?.querySelector("[data-dialog-close]");
 
   const fields = { username, email, phone, message, agreement };
   const missingFields = Object.entries(fields)
     .filter(([, field]) => !field)
     .map(([name]) => name);
+  if (!successDialog) missingFields.push("feedback-success-dialog");
+  if (!closeSuccessDialogButton) {
+    missingFields.push("feedback-success-dialog [data-dialog-close]");
+  }
 
   if (missingFields.length > 0) {
     console.error(`У формі не знайдено поля: ${missingFields.join(", ")}.`);
   } else {
     const phonePattern = /^\+380\d{9}$/;
-    const interactedFields = new WeakSet();
+    let interactedFields = new WeakSet();
+    let returnFocusTarget = null;
+    let previousPhoneValue = phone.value;
+    let wholePhoneValueSelected = false;
+
+    closeSuccessDialogButton.addEventListener("click", () => {
+      successDialog.close();
+    });
+
+    successDialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      successDialog.close();
+    });
+
+    successDialog.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        successDialog.close();
+      }
+    });
+
+    successDialog.addEventListener("close", () => {
+      feedbackForm.reset();
+      interactedFields = new WeakSet();
+      previousPhoneValue = phone.value;
+      wholePhoneValueSelected = false;
+
+      for (const field of Object.values(fields)) {
+        field.classList.remove("border-red-500", "border-green-500");
+        field.removeAttribute("aria-invalid");
+
+        const errorElement = feedbackForm.querySelector(`#${field.id}-error`);
+        if (errorElement) {
+          errorElement.textContent = "";
+          errorElement.hidden = true;
+        }
+      }
+
+      if (returnFocusTarget?.isConnected) {
+        returnFocusTarget.focus();
+      }
+      returnFocusTarget = null;
+    });
+
+    function showSuccessDialog(submitter) {
+      returnFocusTarget = submitter || document.activeElement;
+      successDialog.showModal();
+      closeSuccessDialogButton.focus();
+    }
 
     // Вимикаємо нативні підказки, щоб показувати власні повідомлення для всіх полів.
     feedbackForm.noValidate = true;
@@ -31,7 +85,9 @@ if (!feedbackForm) {
         errorElement.id = `${field.id}-error`;
         errorElement.className = "mt-1 text-sm text-red-600";
         errorElement.hidden = true;
-        errorElement.setAttribute("role", "alert");
+        errorElement.setAttribute("role", "status");
+        errorElement.setAttribute("aria-live", "polite");
+        errorElement.setAttribute("aria-atomic", "true");
 
         const label = feedbackForm.querySelector(`label[for="${field.id}"]`);
         (label || field).insertAdjacentElement("afterend", errorElement);
@@ -94,17 +150,40 @@ if (!feedbackForm) {
     }
 
     function validatePhone() {
-      const isValid = phone.value === "" && !phone.required
-        ? true
-        : phonePattern.test(phone.value);
+      const value = phone.value;
 
-      return setFieldState(
-        phone,
-        isValid,
-        phone.value === ""
-          ? "Введіть номер телефону."
-          : "Введіть номер у форматі +380XXXXXXXXX без пробілів і символів."
-      );
+      if (value === "" && !phone.required) {
+        phone.classList.remove("border-red-500", "border-green-500");
+        phone.removeAttribute("aria-invalid");
+
+        const errorElement = getErrorElement(phone);
+        errorElement.textContent = "";
+        errorElement.hidden = true;
+        return true;
+      }
+
+      if (phonePattern.test(value)) {
+        return setFieldState(phone, true);
+      }
+
+      let errorMessage;
+
+      if (value === "") {
+        errorMessage = "Введіть номер телефону.";
+      } else if (/\s|[()-]/.test(value)) {
+        errorMessage = "Приберіть пробіли, дужки й дефіси з номера.";
+      } else if (/[a-z]/i.test(value)) {
+        errorMessage = "Номер може містити лише цифри та префікс +380.";
+      } else if (/^\+380\d*$/.test(value)) {
+        const digitCount = value.length - 4;
+        errorMessage = digitCount > 9
+          ? "Після +380 має бути рівно 9 цифр. Видаліть зайві цифри."
+          : "Додайте 9 цифр після префікса +380.";
+      } else {
+        errorMessage = "Введіть номер у форматі +380XXXXXXXXX.";
+      }
+
+      return setFieldState(phone, false, errorMessage);
     }
 
     function validateMessage() {
@@ -140,10 +219,14 @@ if (!feedbackForm) {
       validators.get(field)();
     }
 
-    function addUkrainePhonePrefix() {
+    function addUkrainePhonePrefix(event) {
       const value = phone.value;
+      const isInsertion = event.inputType?.startsWith("insert");
+      const isStartingNumber = previousPhoneValue === ""
+        || previousPhoneValue === "0"
+        || wholePhoneValueSelected;
 
-      if (!value.startsWith("0")) {
+      if (!isInsertion || !isStartingNumber || !value.startsWith("0")) {
         return;
       }
 
@@ -162,8 +245,16 @@ if (!feedbackForm) {
       );
     }
 
-    phone.addEventListener("input", () => {
-      addUkrainePhonePrefix();
+    phone.addEventListener("beforeinput", () => {
+      wholePhoneValueSelected = phone.selectionStart === 0
+        && phone.selectionEnd === phone.value.length;
+    });
+
+    phone.addEventListener("input", (event) => {
+      addUkrainePhonePrefix(event);
+      wholePhoneValueSelected = false;
+      previousPhoneValue = phone.value;
+
       if (interactedFields.has(phone) || phone.value !== "") {
         validateAfterInteraction(phone);
       }
@@ -191,7 +282,11 @@ if (!feedbackForm) {
       if (validations.some((isValid) => !isValid)) {
         event.preventDefault();
         feedbackForm.querySelector('[aria-invalid="true"]')?.focus();
+        return;
       }
+
+      event.preventDefault();
+      showSuccessDialog(event.submitter);
     });
   }
 }
